@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 import pandas as pd
 import joblib
 import numpy as np
@@ -12,6 +13,10 @@ from vulnerability import (
 )
 
 
+# ============================================================
+# FastAPI Application
+# ============================================================
+
 app = FastAPI(
     title="AI Disaster Response Management System",
     description="Predicts disaster resource demand for each zone.",
@@ -19,57 +24,18 @@ app = FastAPI(
 )
 
 
-# ==============================
+# ============================================================
 # Load Dataset
-# ==============================
+# ============================================================
 
 DATA_PATH = "data/milestone2_disaster_response_dataset_5000.csv"
 
 df = pd.read_csv(DATA_PATH)
 
 
-# ==============================
-# Load Trained Models
-# ==============================
-
-models = {
-    "food": joblib.load(
-        "models/food_needed_packets_improved_model.pkl"
-    ),
-    "water": joblib.load(
-        "models/water_needed_liters_improved_model.pkl"
-    ),
-    "medical": joblib.load(
-        "models/medical_kits_needed_improved_model.pkl"
-    ),
-    "shelter": joblib.load(
-        "models/shelter_spaces_needed_improved_model.pkl"
-    )
-}
-
-
-# ==============================
-# Features used by the model
-# ==============================
-
-features = [
-    "population",
-    "damage_percent",
-    "severity_score",
-    "elderly_percent",
-    "children_percent",
-    "medically_dependent_percent",
-    "affected_population",
-    "affected_population_percent",
-    "vulnerability_score",
-    "impact_score",
-    "vulnerability_impact"
-]
-
-
-# ==============================
+# ============================================================
 # Feature Engineering
-# ==============================
+# ============================================================
 
 df["affected_population_percent"] = (
     df["affected_population"] / df["population"]
@@ -94,9 +60,52 @@ df["vulnerability_impact"] = (
 )
 
 
-# ==============================
+# ============================================================
+# Features Used by ML Models
+# ============================================================
+
+features = [
+    "population",
+    "damage_percent",
+    "severity_score",
+    "elderly_percent",
+    "children_percent",
+    "medically_dependent_percent",
+    "affected_population",
+    "affected_population_percent",
+    "vulnerability_score",
+    "impact_score",
+    "vulnerability_impact"
+]
+
+
+# ============================================================
+# Load Trained ML Models
+# ============================================================
+
+models = {
+
+    "food": joblib.load(
+        "models/food_needed_packets_improved_model.pkl"
+    ),
+
+    "water": joblib.load(
+        "models/water_needed_liters_improved_model.pkl"
+    ),
+
+    "medical": joblib.load(
+        "models/medical_kits_needed_improved_model.pkl"
+    ),
+
+    "shelter": joblib.load(
+        "models/shelter_spaces_needed_improved_model.pkl"
+    )
+}
+
+
+# ============================================================
 # Prediction + Confidence Interval
-# ==============================
+# ============================================================
 
 def get_prediction_with_confidence(model, X):
 
@@ -126,9 +135,9 @@ def get_prediction_with_confidence(model, X):
     return prediction, lower, upper
 
 
-# ==============================
+# ============================================================
 # Health Check
-# ==============================
+# ============================================================
 
 @app.get("/")
 def home():
@@ -138,16 +147,16 @@ def home():
     }
 
 
-# ==============================
-# Predict Resource Demand
-# ==============================
+# ============================================================
+# Normal Demand Prediction
+# ============================================================
 
 @app.post("/predict/demand/{zone_id}")
 def predict_demand(zone_id: str):
 
-    # ==========================================
+    # --------------------------------------------------------
     # Step 1: Get zone from PostgreSQL
-    # ==========================================
+    # --------------------------------------------------------
 
     db = SessionLocal()
 
@@ -166,23 +175,21 @@ def predict_demand(zone_id: str):
         db.close()
 
 
-    # Zone not found in database
-
     if disaster_zone is None:
 
         raise HTTPException(
             status_code=404,
-            detail=f"Zone {zone_id} not found in DisasterZone database"
+            detail=f"Zone {zone_id} not found"
         )
 
 
-    # ==========================================
-    # Step 2: Get ML data from CSV
-    # ==========================================
+    # --------------------------------------------------------
+    # Step 2: Get ML data
+    # --------------------------------------------------------
 
     zone = df[
         df["zone_id"] == zone_id
-    ]
+    ].copy()
 
 
     if zone.empty:
@@ -190,33 +197,21 @@ def predict_demand(zone_id: str):
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Zone {zone_id} exists in DisasterZone "
-                "database but has no ML dataset record"
+                f"Zone {zone_id} has no ML dataset record"
             )
         )
 
 
-    # ==========================================
-    # Step 3: Use severity from DisasterZone
-    # ==========================================
+    # --------------------------------------------------------
+    # Step 3: Use database severity
+    # --------------------------------------------------------
 
-    severity_score = float(
+    zone["severity_score"] = (
         disaster_zone.severity_score
     )
 
 
-    # Copy the zone data so we don't modify
-    # the original dataframe
-
-    zone = zone.copy()
-
-
-    # Replace CSV severity with database severity
-
-    zone["severity_score"] = severity_score
-
-
-    # Recalculate impact using database severity
+    # Recalculate impact
 
     zone["impact_score"] = (
         zone["damage_percent"]
@@ -233,16 +228,16 @@ def predict_demand(zone_id: str):
     )
 
 
-    # ==========================================
+    # --------------------------------------------------------
     # Step 4: Prepare ML features
-    # ==========================================
+    # --------------------------------------------------------
 
     X = zone[features]
 
 
-    # ==========================================
+    # --------------------------------------------------------
     # Step 5: Generate predictions
-    # ==========================================
+    # --------------------------------------------------------
 
     predictions = {}
 
@@ -279,9 +274,9 @@ def predict_demand(zone_id: str):
         }
 
 
-    # ==========================================
+    # --------------------------------------------------------
     # Step 6: Vulnerability weighting
-    # ==========================================
+    # --------------------------------------------------------
 
     vulnerability_score = float(
         zone["vulnerability_score"].iloc[0]
@@ -340,9 +335,9 @@ def predict_demand(zone_id: str):
         }
 
 
-    # ==========================================
-    # Step 7: Final API response
-    # ==========================================
+    # --------------------------------------------------------
+    # Step 7: Return response
+    # --------------------------------------------------------
 
     return {
 
@@ -354,9 +349,8 @@ def predict_demand(zone_id: str):
             disaster_zone.disaster_type
         ),
 
-        "severity_score": round(
-            severity_score,
-            2
+        "severity_score": (
+            disaster_zone.severity_score
         ),
 
         "severity_level": (
@@ -375,6 +369,288 @@ def predict_demand(zone_id: str):
 
             "radius_km": (
                 disaster_zone.radius_km
+            )
+        },
+
+        "vulnerability_score": round(
+            vulnerability_score,
+            2
+        ),
+
+        "vulnerability_factor": round(
+            vulnerability_factor,
+            2
+        ),
+
+        "predictions": adjusted_predictions
+    }
+
+
+# ============================================================
+# Dynamic Demand Update Request
+# ============================================================
+
+class DemandUpdate(BaseModel):
+
+    severity_score: float = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Updated disaster severity score"
+    )
+
+    damage_percent: float = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Updated damage percentage"
+    )
+
+    affected_population: int = Field(
+        ...,
+        ge=0,
+        description="Updated affected population"
+    )
+
+
+# ============================================================
+# Dynamic Demand Update
+# ============================================================
+
+@app.post("/predict/demand/{zone_id}/update")
+def update_demand(
+    zone_id: str,
+    update: DemandUpdate
+):
+
+    # --------------------------------------------------------
+    # Step 1: Get DisasterZone from PostgreSQL
+    # --------------------------------------------------------
+
+    db = SessionLocal()
+
+    try:
+
+        disaster_zone = (
+            db.query(DisasterZone)
+            .filter(
+                DisasterZone.zone_id == zone_id
+            )
+            .first()
+        )
+
+    finally:
+
+        db.close()
+
+
+    if disaster_zone is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"Zone {zone_id} not found"
+        )
+
+
+    # --------------------------------------------------------
+    # Step 2: Get ML data from CSV
+    # --------------------------------------------------------
+
+    zone = df[
+        df["zone_id"] == zone_id
+    ].copy()
+
+
+    if zone.empty:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Zone {zone_id} has no ML dataset record"
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # Step 3: Apply updated field/satellite data
+    # --------------------------------------------------------
+
+    zone["severity_score"] = (
+        update.severity_score
+    )
+
+
+    zone["damage_percent"] = (
+        update.damage_percent
+    )
+
+
+    zone["affected_population"] = (
+        update.affected_population
+    )
+
+
+    # --------------------------------------------------------
+    # Step 4: Recalculate engineered features
+    # --------------------------------------------------------
+
+    zone["affected_population_percent"] = (
+        zone["affected_population"]
+        / zone["population"]
+    ) * 100
+
+
+    zone["vulnerability_score"] = (
+        0.35 * zone["elderly_percent"]
+        + 0.30 * zone["children_percent"]
+        + 0.45 * zone["medically_dependent_percent"]
+    )
+
+
+    zone["impact_score"] = (
+        zone["damage_percent"]
+        * zone["severity_score"]
+    ) / 100
+
+
+    zone["vulnerability_impact"] = (
+        zone["impact_score"]
+        * (
+            1
+            + zone["vulnerability_score"] / 100
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # Step 5: Prepare ML features
+    # --------------------------------------------------------
+
+    X = zone[features]
+
+
+    # --------------------------------------------------------
+    # Step 6: Generate updated predictions
+    # --------------------------------------------------------
+
+    predictions = {}
+
+
+    for resource, model in models.items():
+
+        prediction, lower, upper = (
+            get_prediction_with_confidence(
+                model,
+                X
+            )
+        )
+
+
+        predictions[resource] = {
+
+            "prediction": round(
+                max(0, prediction),
+                2
+            ),
+
+            "confidence_interval": {
+
+                "lower": round(
+                    max(0, lower),
+                    2
+                ),
+
+                "upper": round(
+                    max(0, upper),
+                    2
+                )
+            }
+        }
+
+
+    # --------------------------------------------------------
+    # Step 7: Vulnerability adjustment
+    # --------------------------------------------------------
+
+    vulnerability_score = float(
+        zone["vulnerability_score"].iloc[0]
+    )
+
+
+    vulnerability_factor = (
+        calculate_vulnerability_factor(
+            vulnerability_score
+        )
+    )
+
+
+    adjusted_predictions = {}
+
+
+    for resource, values in predictions.items():
+
+        adjusted_prediction = adjust_prediction(
+            values["prediction"],
+            vulnerability_factor
+        )
+
+
+        adjusted_lower = adjust_prediction(
+            values["confidence_interval"]["lower"],
+            vulnerability_factor
+        )
+
+
+        adjusted_upper = adjust_prediction(
+            values["confidence_interval"]["upper"],
+            vulnerability_factor
+        )
+
+
+        adjusted_predictions[resource] = {
+
+            "prediction": round(
+                adjusted_prediction,
+                2
+            ),
+
+            "confidence_interval": {
+
+                "lower": round(
+                    adjusted_lower,
+                    2
+                ),
+
+                "upper": round(
+                    adjusted_upper,
+                    2
+                )
+            }
+        }
+
+
+    # --------------------------------------------------------
+    # Step 8: Return updated demand
+    # --------------------------------------------------------
+
+    return {
+
+        "zone_id": zone_id,
+
+        "update_type": "Dynamic Demand Update",
+
+        "updated_inputs": {
+
+            "severity_score": (
+                update.severity_score
+            ),
+
+            "damage_percent": (
+                update.damage_percent
+            ),
+
+            "affected_population": (
+                update.affected_population
             )
         },
 
